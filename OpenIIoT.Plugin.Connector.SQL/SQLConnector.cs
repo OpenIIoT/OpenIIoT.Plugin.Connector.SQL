@@ -79,27 +79,20 @@ namespace OpenIIoT.Plugin.Connector.SQL
 
             InitializeItems();
 
-            timer = new System.Timers.Timer(10);
+            timer = new System.Timers.Timer(500);
             timer.Elapsed += Timer_Elapsed;
 
             Subscriptions = new Dictionary<Item, List<Action<object>>>();
+            TriggerCache = new Dictionary<Item, string>();
         }
 
         #endregion Public Constructors
-
-        #region Public Properties
-
-        public IApplicationManager Manager { get; set; }
-
-        #endregion Public Properties
 
         #region Public Events
 
         public event EventHandler<StateChangedEventArgs> StateChanged;
 
         #endregion Public Events
-
-
 
         #region Public Properties
 
@@ -118,6 +111,7 @@ namespace OpenIIoT.Plugin.Connector.SQL
         public string InstanceName { get; private set; }
 
         public string ItemProviderName { get; private set; }
+        public IApplicationManager Manager { get; set; }
 
         /// <summary>
         ///     The Connector name.
@@ -144,6 +138,8 @@ namespace OpenIIoT.Plugin.Connector.SQL
         ///     The Connector Version.
         /// </summary>
         public string Version { get; private set; }
+
+        private IDictionary<Item, string> TriggerCache { get; set; }
 
         #endregion Public Properties
 
@@ -246,8 +242,6 @@ namespace OpenIIoT.Plugin.Connector.SQL
         {
             Configuration = configuration;
 
-            logger.Info("Config: " + JsonConvert.SerializeObject(Configuration));
-
             return new Result();
         }
 
@@ -275,19 +269,10 @@ namespace OpenIIoT.Plugin.Connector.SQL
         {
             object retVal = new object();
 
-            logger.Info("Reading...");
-
             SQLConnectorConfigurationDatabase db = Configuration?.Databases?.Where(d => d.Name == "Demo").FirstOrDefault();
-
-            logger.Info(db.ConnectionString);
-
             SQLConnectorConfigurationDatabaseQuery query = db?.Queries?.Where(q => item.FQN.EndsWith(q.Name)).FirstOrDefault();
 
-            logger.Info(query.SQL);
-
-            retVal = Fetch(db.ConnectionString, query.SQL);
-
-            logger.Info("DataSet: " + JsonConvert.SerializeObject(retVal));
+            retVal = Fetch(db.ConnectionString, query.Query);
 
             return retVal;
         }
@@ -307,15 +292,12 @@ namespace OpenIIoT.Plugin.Connector.SQL
             return Manager.GetManager<IConfigurationManager>().Configuration.UpdateInstance(this.GetType(), Configuration);
         }
 
-        public void SetFingerprint(string fingerprint)
-        {
-            Fingerprint = fingerprint;
-        }
-
         public IResult Start()
         {
+            logger.Debug("Starting SQL Connector...");
             timer.Start();
 
+            logger.Debug("SQL Connector started.");
             return new Result();
         }
 
@@ -404,51 +386,43 @@ namespace OpenIIoT.Plugin.Connector.SQL
             return retVal;
         }
 
-        public Result Write(string item, object value)
+        #endregion Public Methods
+
+        #region Private Methods
+
+        public void SetFingerprint(string fingerprint)
         {
-            return new Result().AddError("The connector is not writeable.");
+            throw new NotImplementedException();
         }
 
-        private object Fetch(string connectionString, string sql)
+        private object Fetch(string connectionString, string query)
         {
-            logger.Info("Fetching " + connectionString + " " + sql);
-            object retVal = new object();
-
-            SqlConnection client = new SqlConnection(connectionString);
-            logger.Info("Opening connection...");
-            client.Open();
-
-            logger.Info("Connection " + client.State);
-
-            SqlDataAdapter adapter = new SqlDataAdapter(sql, client);
-
-            logger.Info("Filling datatable...");
+            object retVal;
+            SqlConnection connection = new SqlConnection(connectionString);
+            SqlDataAdapter adapter = new SqlDataAdapter(query, connection);
 
             try
             {
-                DataTable set = new DataTable();
-                adapter.FillSchema(set, SchemaType.Source);
-                logger.Info("Rows: " + adapter.Fill(set));
-                logger.Info("Done.");
+                connection.Open();
 
-                retVal = set;
+                DataTable table = new DataTable();
+                adapter.Fill(table);
+
+                retVal = table;
             }
             catch (Exception ex)
             {
                 retVal = ex.Message;
             }
-
-            logger.Info(JsonConvert.SerializeObject(retVal));
-
-            adapter.Dispose();
-            client.Dispose();
+            finally
+            {
+                adapter.Dispose();
+                connection.Close();
+                connection.Dispose();
+            }
 
             return retVal;
         }
-
-        #endregion Public Methods
-
-        #region Private Methods
 
         private Item Find(Item root, string fqn)
         {
@@ -463,52 +437,79 @@ namespace OpenIIoT.Plugin.Connector.SQL
             return found;
         }
 
+        private string GetCachedTrigger(Item item)
+        {
+            if (TriggerCache.ContainsKey(item))
+            {
+                return TriggerCache[item];
+            }
+            return string.Empty;
+        }
+
         private void InitializeItems()
         {
-            // instantiate an item root
             itemRoot = new Item(InstanceName, this);
 
             logger.Info(JsonConvert.SerializeObject(Configuration));
 
-            logger.Info("Foreach db");
             foreach (var database in Configuration.Databases)
             {
-                logger.Info("Adding db");
                 Item dbRoot = itemRoot.AddChild(new Item(database.Name, this)).ReturnValue;
 
-                logger.Info("Foreach query");
                 foreach (var query in database.Queries)
                 {
-                    logger.Info("Adding query");
                     dbRoot.AddChild(new Item(query.Name, this));
                 }
             }
         }
 
-        private void Timer_Elapsed(object sender, System.Timers.ElapsedEventArgs e)
+        private void Timer_Elapsed(object sender, ElapsedEventArgs e)
         {
-            counter++;
-
-            // iterate over the subscribed tags and update them using Write() this will update the value of the ConnectorItem and
-            // will fire the Changed event which will cascade the value through the model
             foreach (Item key in Subscriptions.Keys)
             {
-                //if (key.FQN == InstanceName + ".DateTime.Time") key.Write(DateTime.Now.ToString("HH:mm:ss.fff"));
-                //if (key.FQN == InstanceName + ".Process.Ramp") key.Write(counter);
-                if (key.FQN.Contains("DateTime.Time"))
+                if (key.FQN.EndsWith("Batches"))
                 {
-                    foreach (Action<object> callback in Subscriptions[key])
+                    // check to see if the trigger has updated. ignore the polling time for demo purposes.
+                    SQLConnectorConfigurationDatabase db = Configuration.Databases.Where(d => d.Name == "Demo").FirstOrDefault();
+                    SQLConnectorConfigurationDatabaseQuery query = db.Queries.Where(q => q.Name == "Batches").FirstOrDefault();
+                    SQLConnectorConfigurationDatabaseQueryTrigger trigger = query.Trigger;
+
+                    if (trigger != default(SQLConnectorConfigurationDatabaseQueryTrigger))
                     {
-                        callback.Invoke(DateTime.Now.ToString("HH:mm:ss.fff"));
+                        if (!string.IsNullOrEmpty(trigger.Query))
+                        {
+                            DataTable triggerTable = (DataTable)Fetch(db.ConnectionString, trigger.Query);
+                            string triggerValue = triggerTable.Rows[0].ItemArray[0].ToString();
+
+                            if (string.IsNullOrEmpty(triggerValue))
+                            {
+                            }
+                            else
+                            {
+                                if (GetCachedTrigger(key) != triggerValue)
+                                {
+                                    logger.Debug("Trigger changed. Firing update.");
+
+                                    foreach (Action<object> callback in Subscriptions[key]) { callback.Invoke(Read(key)); }
+
+                                    UpdateTriggerCache(key, triggerValue);
+                                }
+                            }
+                        }
                     }
                 }
-                if (key.FQN.Contains("Math.Sine") || key.FQN.Contains("Math.Trig") || key.FQN.Contains("Misc.MousePosition"))
-                {
-                    foreach (Action<object> callback in Subscriptions[key])
-                    {
-                        callback.Invoke(Read(key));
-                    }
-                }
+            }
+        }
+
+        private void UpdateTriggerCache(Item item, string value)
+        {
+            if (TriggerCache.ContainsKey(item))
+            {
+                TriggerCache[item] = value;
+            }
+            else
+            {
+                TriggerCache.Add(item, value);
             }
         }
 

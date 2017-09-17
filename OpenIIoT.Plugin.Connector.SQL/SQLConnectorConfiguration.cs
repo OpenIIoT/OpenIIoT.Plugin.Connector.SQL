@@ -44,10 +44,19 @@ namespace OpenIIoT.Plugin.Connector.SQL
     {
         #region Public Properties
 
-        public int? ChecksumInternval { get; set; }
-        public string ChecksumSQL { get; set; }
         public string Name { get; set; }
-        public string SQL { get; set; }
+        public string Query { get; set; }
+        public SQLConnectorConfigurationDatabaseQueryTrigger Trigger { get; set; }
+
+        #endregion Public Properties
+    }
+
+    public class SQLConnectorConfigurationDatabaseQueryTrigger
+    {
+        #region Public Properties
+
+        public int? PollingInterval { get; set; }
+        public string Query { get; set; }
 
         #endregion Public Properties
     }
