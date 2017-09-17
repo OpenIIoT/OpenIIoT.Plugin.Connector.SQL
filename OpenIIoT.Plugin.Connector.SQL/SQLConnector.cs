@@ -8,6 +8,7 @@ using NLog.xLogger;
 using Utility.OperationResult;
 using OpenIIoT.SDK.Configuration;
 using OpenIIoT.SDK;
+using System.Data;
 using System.Drawing;
 using System.IO;
 using System.Text;
@@ -17,6 +18,7 @@ using OpenIIoT.SDK.Plugin;
 using OpenIIoT.SDK.Plugin.Connector;
 using System.Runtime.InteropServices;
 using Newtonsoft.Json;
+using System.Data.SqlClient;
 
 namespace OpenIIoT.Plugin.Connector.SQL
 {
@@ -272,6 +274,21 @@ namespace OpenIIoT.Plugin.Connector.SQL
         public object Read(Item item)
         {
             object retVal = new object();
+
+            logger.Info("Reading...");
+
+            SQLConnectorConfigurationDatabase db = Configuration?.Databases?.Where(d => d.Name == "Demo").FirstOrDefault();
+
+            logger.Info(db.ConnectionString);
+
+            SQLConnectorConfigurationDatabaseQuery query = db?.Queries?.Where(q => item.FQN.EndsWith(q.Name)).FirstOrDefault();
+
+            logger.Info(query.SQL);
+
+            retVal = Fetch(db.ConnectionString, query.SQL);
+
+            logger.Info("DataSet: " + JsonConvert.SerializeObject(retVal));
+
             return retVal;
         }
 
@@ -392,6 +409,43 @@ namespace OpenIIoT.Plugin.Connector.SQL
             return new Result().AddError("The connector is not writeable.");
         }
 
+        private object Fetch(string connectionString, string sql)
+        {
+            logger.Info("Fetching " + connectionString + " " + sql);
+            object retVal = new object();
+
+            SqlConnection client = new SqlConnection(connectionString);
+            logger.Info("Opening connection...");
+            client.Open();
+
+            logger.Info("Connection " + client.State);
+
+            SqlDataAdapter adapter = new SqlDataAdapter(sql, client);
+
+            logger.Info("Filling datatable...");
+
+            try
+            {
+                DataTable set = new DataTable();
+                adapter.FillSchema(set, SchemaType.Source);
+                logger.Info("Rows: " + adapter.Fill(set));
+                logger.Info("Done.");
+
+                retVal = set;
+            }
+            catch (Exception ex)
+            {
+                retVal = ex.Message;
+            }
+
+            logger.Info(JsonConvert.SerializeObject(retVal));
+
+            adapter.Dispose();
+            client.Dispose();
+
+            return retVal;
+        }
+
         #endregion Public Methods
 
         #region Private Methods
@@ -426,7 +480,7 @@ namespace OpenIIoT.Plugin.Connector.SQL
                 foreach (var query in database.Queries)
                 {
                     logger.Info("Adding query");
-                    dbRoot.AddChild(new Item(query.Name));
+                    dbRoot.AddChild(new Item(query.Name, this));
                 }
             }
         }
