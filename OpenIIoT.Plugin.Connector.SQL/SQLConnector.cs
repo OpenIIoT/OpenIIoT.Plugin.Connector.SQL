@@ -16,6 +16,7 @@ using OpenIIoT.SDK.Common.Provider.ItemProvider;
 using OpenIIoT.SDK.Plugin;
 using OpenIIoT.SDK.Plugin.Connector;
 using System.Runtime.InteropServices;
+using Newtonsoft.Json;
 
 namespace OpenIIoT.Plugin.Connector.SQL
 {
@@ -66,28 +67,37 @@ namespace OpenIIoT.Plugin.Connector.SQL
             Version = "1.0.0.0";
             PluginType = PluginType.Connector;
 
+            Manager = manager;
+
             ItemProviderName = FQN;
 
             logger.Info("Initializing " + PluginType + " " + FQN + "." + instanceName);
 
+            Configure();
+
             InitializeItems();
 
-            Subscriptions = new Dictionary<Item, List<Action<object>>>();
-
-            ConfigureFileWatch();
-
-            counter = 0;
             timer = new System.Timers.Timer(10);
             timer.Elapsed += Timer_Elapsed;
+
+            Subscriptions = new Dictionary<Item, List<Action<object>>>();
         }
 
         #endregion Public Constructors
+
+        #region Public Properties
+
+        public IApplicationManager Manager { get; set; }
+
+        #endregion Public Properties
 
         #region Public Events
 
         public event EventHandler<StateChangedEventArgs> StateChanged;
 
         #endregion Public Events
+
+
 
         #region Public Properties
 
@@ -159,20 +169,7 @@ namespace OpenIIoT.Plugin.Connector.SQL
 
             // this will always be typeof(YourConfiguration/ModelObject)
             retVal.Model = typeof(SQLConnectorConfiguration);
-            return retVal;
-        }
-
-        /// <summary>
-        ///     The GetDefaultConfiguration method is static and returns a default or blank instance of the confguration model/type.
-        ///
-        ///     If the ConfigurationManager fails to retrieve the configuration for an instance it will invoke this method and
-        ///     return this value in lieu of a loaded configuration. This is a failsafe in case the configuration file becomes corrupted.
-        /// </summary>
-        /// <returns></returns>
-        public static SQLConnectorConfiguration GetDefaultConfiguration()
-        {
-            SQLConnectorConfiguration retVal = new SQLConnectorConfiguration();
-            retVal.Interval = 100;
+            retVal.DefaultConfiguration = new SQLConnectorConfiguration();
             return retVal;
         }
 
@@ -205,7 +202,35 @@ namespace OpenIIoT.Plugin.Connector.SQL
         /// <returns></returns>
         public IResult Configure()
         {
-            throw new NotImplementedException();
+            logger.EnterMethod();
+            logger.Debug("Attempting to Configure with the configuration from the Configuration Manager...");
+            Result retVal = new Result();
+
+            IResult<SQLConnectorConfiguration> fetchResult = Manager.GetManager<IConfigurationManager>().Configuration.GetInstance<SQLConnectorConfiguration>(GetType());
+
+            // if the fetch succeeded, configure this instance with the result.
+            if (fetchResult.ResultCode != ResultCode.Failure)
+            {
+                logger.Debug("Successfully fetched the configuration from the Configuration Manager.");
+                Configure(fetchResult.ReturnValue);
+            }
+            else
+            {
+                // if the fetch failed, add a new default instance to the configuration and try again.
+                logger.Debug("Unable to fetch the configuration.  Adding the default configuration to the Configuration Manager...");
+                IResult<SQLConnectorConfiguration> createResult = Manager.GetManager<IConfigurationManager>().Configuration.AddInstance<SQLConnectorConfiguration>(GetType(), GetConfigurationDefinition().DefaultConfiguration);
+                if (createResult.ResultCode != ResultCode.Failure)
+                {
+                    logger.Debug("Successfully added the configuration.  Configuring...");
+                    Configure(createResult.ReturnValue);
+                }
+
+                retVal.Incorporate(createResult);
+            }
+
+            retVal.LogResult(logger.Debug);
+            logger.ExitMethod(retVal);
+            return retVal;
         }
 
         /// <summary>
@@ -218,6 +243,8 @@ namespace OpenIIoT.Plugin.Connector.SQL
         public IResult Configure(SQLConnectorConfiguration configuration)
         {
             Configuration = configuration;
+
+            logger.Info("Config: " + JsonConvert.SerializeObject(Configuration));
 
             return new Result();
         }
@@ -245,71 +272,7 @@ namespace OpenIIoT.Plugin.Connector.SQL
         public object Read(Item item)
         {
             object retVal = new object();
-
-            double val = DateTime.Now.Second;
-            double ms = DateTime.Now.Millisecond / 10;
-            double count = (double)counter / 10;
-            switch (item.FQN.Split('.')[item.FQN.Split('.').Length - 1])
-            {
-                case "Sine":
-                    retVal = Math.Sin(counter / 10l);
-                    return retVal;
-
-                case "Cosine":
-                    retVal = Math.Cos(val);
-                    return retVal;
-
-                case "Tangent":
-                    retVal = Math.Tan(val);
-                    return retVal;
-
-                case "Trig":
-                    retVal = new double[4] { count, Math.Sin(count), Math.Cos(count), Math.Tan(count) };
-                    return retVal;
-
-                case "Ramp":
-                    retVal = val;
-                    return retVal;
-
-                case "Step":
-                    retVal = val % 5;
-                    return retVal;
-
-                case "Toggle":
-                    retVal = val % 2;
-                    return retVal;
-
-                case "Time":
-                    retVal = DateTime.Now.ToString("HH:mm:ss.fff");
-                    return retVal;
-
-                case "Date":
-                    retVal = DateTime.Now.ToString("MM/dd/yyyy");
-                    return retVal;
-
-                case "TimeZone":
-                    retVal = DateTime.Now.ToString("zzz");
-                    return retVal;
-
-                case "Array":
-                    retVal = new int[5] { 1, 2, 3, 4, 5 };
-                    return retVal;
-
-                case "StaticImage":
-                    retVal = GetStaticImage();
-                    return retVal;
-
-                case "DynamicImage":
-                    retVal = GetDynamicImage();
-                    return retVal;
-
-                case "MousePosition":
-                    retVal = GetCursorPosition();
-                    return retVal;
-
-                default:
-                    return retVal;
-            }
+            return retVal;
         }
 
         public async Task<object> ReadAsync(Item item)
@@ -324,7 +287,7 @@ namespace OpenIIoT.Plugin.Connector.SQL
 
         public IResult SaveConfiguration()
         {
-            throw new NotImplementedException();
+            return Manager.GetManager<IConfigurationManager>().Configuration.UpdateInstance(this.GetType(), Configuration);
         }
 
         public void SetFingerprint(string fingerprint)
@@ -335,6 +298,7 @@ namespace OpenIIoT.Plugin.Connector.SQL
         public IResult Start()
         {
             timer.Start();
+
             return new Result();
         }
 
@@ -432,33 +396,6 @@ namespace OpenIIoT.Plugin.Connector.SQL
 
         #region Private Methods
 
-        /// <summary>
-        ///     Retrieves the cursor's position, in screen coordinates.
-        /// </summary>
-        /// <see>See MSDN documentation for further information.</see>
-        [DllImport("user32.dll")]
-        private static extern bool GetCursorPos(out POINT lpPoint);
-
-        private static Point GetCursorPosition()
-        {
-            POINT lpPoint;
-            GetCursorPos(out lpPoint);
-            //bool success = User32.GetCursorPos(out lpPoint);
-            // if (!success)
-
-            return lpPoint;
-        }
-
-        private void ConfigureFileWatch()
-        {
-            FileSystemWatcher watcher = new FileSystemWatcher();
-            watcher.Path = Path.GetDirectoryName(System.Reflection.Assembly.GetAssembly(GetType()).Location);
-            watcher.NotifyFilter = NotifyFilters.LastWrite;
-            watcher.Filter = "image.jpg";
-            watcher.Changed += new FileSystemEventHandler(OnDynamicImageChange);
-            watcher.EnableRaisingEvents = true;
-        }
-
         private Item Find(Item root, string fqn)
         {
             if (root.FQN == fqn) return root;
@@ -472,97 +409,26 @@ namespace OpenIIoT.Plugin.Connector.SQL
             return found;
         }
 
-        private byte[] GetDynamicImage()
-        {
-            string fullPath = Path.GetDirectoryName(System.Reflection.Assembly.GetAssembly(GetType()).Location);
-            string fileName = Path.Combine(fullPath, "image.jpg");
-
-            if (File.Exists(fileName))
-            {
-                return ReadFile(fileName);
-            }
-            else
-            {
-                string err = "Not found: " + fileName;
-                return Encoding.ASCII.GetBytes(err);
-            }
-        }
-
-        private byte[] GetStaticImage()
-        {
-            return ImageToByteArray(Properties.Resources.OpenIIoT);
-        }
-
-        private byte[] ImageToByteArray(Image image)
-        {
-            ImageConverter converter = new ImageConverter();
-            return (byte[])converter.ConvertTo(image, typeof(byte[]));
-        }
-
         private void InitializeItems()
         {
             // instantiate an item root
             itemRoot = new Item(InstanceName, this);
 
-            // create some simulation items
-            Item mathRoot = itemRoot.AddChild(new Item("Math", this)).ReturnValue;
-            mathRoot.AddChild(new Item("Trig", this));
-            mathRoot.AddChild(new Item("Sine", this));
-            mathRoot.AddChild(new Item("Cosine", this));
-            mathRoot.AddChild(new Item("Tangent", this));
+            logger.Info(JsonConvert.SerializeObject(Configuration));
 
-            Item processRoot = itemRoot.AddChild(new Item("Process", this)).ReturnValue;
-            processRoot.AddChild(new Item("Ramp", this));
-            processRoot.AddChild(new Item("Step", this));
-            processRoot.AddChild(new Item("Toggle", this));
-
-            Item timeRoot = itemRoot.AddChild(new Item("DateTime", this)).ReturnValue;
-            timeRoot.AddChild(new Item("Time", this));
-            timeRoot.AddChild(new Item("Date", this));
-            timeRoot.AddChild(new Item("TimeZone", this));
-
-            Item binaryRoot = itemRoot.AddChild(new Item("Binary", this)).ReturnValue;
-            binaryRoot.AddChild(new Item("StaticImage", this));
-            binaryRoot.AddChild(new Item("DynamicImage", this));
-
-            Item miscRoot = itemRoot.AddChild(new Item("Misc", this)).ReturnValue;
-            miscRoot.AddChild(new Item("MousePosition", this));
-        }
-
-        private void OnDynamicImageChange(object sender, FileSystemEventArgs args)
-        {
-            logger.Info("File watcher for " + args.FullPath);
-
-            Item key = Find("Simulation.Binary.DynamicImage");
-            if (Subscriptions.ContainsKey(key))
+            logger.Info("Foreach db");
+            foreach (var database in Configuration.Databases)
             {
-                foreach (Action<object> callback in Subscriptions[key])
+                logger.Info("Adding db");
+                Item dbRoot = itemRoot.AddChild(new Item(database.Name, this)).ReturnValue;
+
+                logger.Info("Foreach query");
+                foreach (var query in database.Queries)
                 {
-                    callback.Invoke(ReadFile(args.FullPath));
-                    logger.Info("Invoked dynamic image change delegate");
+                    logger.Info("Adding query");
+                    dbRoot.AddChild(new Item(query.Name));
                 }
             }
-        }
-
-        private byte[] ReadFile(string fileName)
-        {
-            byte[] retVal = default(byte[]);
-
-            while (true)
-            {
-                try
-                {
-                    retVal = File.ReadAllBytes(fileName);
-                    break;
-                }
-                catch (IOException ex)
-                {
-                    logger.Info("Deferred read due to " + ex.GetType().Name);
-                    System.Threading.Thread.Sleep(10);
-                }
-            }
-
-            return retVal;
         }
 
         private void Timer_Elapsed(object sender, System.Timers.ElapsedEventArgs e)
@@ -592,30 +458,6 @@ namespace OpenIIoT.Plugin.Connector.SQL
             }
         }
 
-        /// <summary>
-        ///     Struct representing a point.
-        /// </summary>
-        [StructLayout(LayoutKind.Sequential)]
-        public struct POINT
-        {
-            public int X;
-            public int Y;
-
-            public static implicit operator Point(POINT point)
-            {
-                return new Point(point.X, point.Y);
-            }
-        }
-
         #endregion Private Methods
-    }
-
-    public class SQLConnectorConfiguration
-    {
-        #region Public Properties
-
-        public int Interval { set; get; }
-
-        #endregion Public Properties
     }
 }
